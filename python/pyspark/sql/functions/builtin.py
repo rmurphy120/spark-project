@@ -4169,6 +4169,102 @@ def desc_nulls_last(col: "ColumnOrName") -> Column:
         else _invoke_function("desc_nulls_last", col)
     )
 
+@_try_remote_functions
+def min_max_scale(
+    col: "ColumnOrName",
+    output_min: float = 0.0,
+    output_max: float = 1.0
+) -> Column:
+    """
+    Aggregate function: scales values to a specified range using min-max normalization.
+
+    The scaled value is computed as:
+    (value - min) / (max - min) * (output_max - output_min) + output_min
+
+    This function computes the minimum and maximum values across the entire dataset
+    in a single aggregation pass, then applies the scaling transformation.
+
+    When the column contains all identical values (max == min), the function returns
+    the midpoint of the output range for all values to avoid division by zero.
+
+    .. versionadded:: 4.1.0
+
+    Parameters
+    ----------
+    col : :class:`~pyspark.sql.Column` or str
+        target column to scale
+    output_min : float, optional
+        minimum value of output range (default is 0.0)
+    output_max : float, optional
+        maximum value of output range (default is 1.0)
+
+    Returns
+    -------
+    :class:`~pyspark.sql.Column`
+        scaled values in range [output_min, output_max]
+
+    Examples
+    --------
+    >>> from pyspark.sql import functions as F
+    >>> df = spark.createDataFrame([(10.0,), (20.0,), (30.0,)], ["value"])
+
+    Scale to [0, 1] (default):
+
+    >>> df.select(F.min_max_scale("value")).show()
+    +---------------------+
+    |min_max_scale(value) |
+    +---------------------+
+    |                  0.0|
+    |                  0.5|
+    |                  1.0|
+    +---------------------+
+
+    Scale to custom range [0, 100]:
+
+    >>> df.select(F.min_max_scale("value", 0, 100)).show()
+    +---------------------------+
+    |min_max_scale(value,0,100) |
+    +---------------------------+
+    |                        0.0|
+    |                       50.0|
+    |                      100.0|
+    +---------------------------+
+
+    Handle edge case with identical values:
+
+    >>> df2 = spark.createDataFrame([(5.0,), (5.0,), (5.0,)], ["value"])
+    >>> df2.select(F.min_max_scale("value", 0, 100)).show()
+    +---------------------------+
+    |min_max_scale(value,0,100) |
+    +---------------------------+
+    |                       50.0|
+    |                       50.0|
+    |                       50.0|
+    +---------------------------+
+    """
+    from pyspark.sql.classic.column import _to_java_column
+    from pyspark.sql.window import Window
+
+    # Create window over entire dataset
+    w = Window.partitionBy()
+
+    # Compute min and max
+    min_col = min(col).over(w)
+    max_col = max(col).over(w)
+
+    # Compute ranges
+    range_col = max_col - min_col
+    output_range = output_max - output_min
+    midpoint = (output_max + output_min) / 2.0
+
+    # Apply scaling with edge case handling
+    return (
+        when(range_col == 0.0, lit(midpoint))
+        .when(_to_java_column(col).isNull(), lit(None))
+        .otherwise(
+            ((col - min_col) / range_col) * lit(output_range) + lit(output_min)
+        )
+    )
 
 @_try_remote_functions
 def stddev(col: "ColumnOrName") -> Column:
