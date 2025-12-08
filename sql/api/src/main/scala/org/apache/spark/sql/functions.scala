@@ -524,13 +524,13 @@ object functions {
    * @param outputMin minimum value of output range (default: 0.0)
    * @param outputMax maximum value of output range (default: 1.0)
    * @return column with scaled values in range [outputMin, outputMax]
-   *  
+   *
    * @group agg_funcs
    * @since 4.1.0
    */
   def min_max_scale(e: Column, outputMin: Double = 0.0, outputMax: Double = 1.0): Column = {
     val w = Window.partitionBy()
-  
+    
     // These two aggregations will be computed in SINGLE pass by Catalyst
     val minCol = min(e).over(w)
     val maxCol = max(e).over(w)
@@ -538,7 +538,7 @@ object functions {
     val range = maxCol - minCol
     val outputRange = outputMax - outputMin
     val midpoint = (outputMax + outputMin) / 2.0
-  
+    
     when(range === 0.0, lit(midpoint))
       .when(e.isNull, lit(null))
       .otherwise(
@@ -558,7 +558,7 @@ object functions {
 
   /**
    * Aggregate function: scales values to a specified range using min-max normalization.
-   * 
+   *
    * @group agg_funcs
    * @since 4.1.0
    */
