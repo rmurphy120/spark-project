@@ -563,6 +563,41 @@ object functions {
   }
 
   /**
+   * Column-based z-score normalization over the entire dataset.
+   *
+   * The z-score is computed as:
+   *
+   *   (value - avg(value)) / stddev_samp(value)
+   *
+   * If all non-null values are identical (standard deviation = 0), the result is 0.0
+   * for non-null inputs. Null inputs produce null outputs.
+   *
+   * @group window_funcs
+   * @since 4.1.0
+   */
+  def zscore(e: Column): Column = {
+    val w = Window.partitionBy()
+    val mean = avg(e).over(w)
+    val stddev = stddev_samp(e).over(w)
+
+    val expr = when(e.isNull, lit(null))
+      .when(stddev === 0.0 || stddev.isNull, lit(0.0))
+      .otherwise((e - mean) / stddev)
+
+    expr.alias(s"zscore(${e.expr.prettyName})")
+  }
+
+  /**
+   * Column-based z-score normalization over the entire dataset, by column name.
+   *
+   * @group window_funcs
+   * @since 4.1.0
+   */
+  def zscore(columnName: String): Column =
+    zscore(Column(columnName))
+
+
+  /**
    * Aggregate function: returns the first value in a group.
    *
    * The function by default returns the first values it sees. It will return the first non-null
