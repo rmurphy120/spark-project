@@ -4235,28 +4235,15 @@ def min_max_scale(
     )
 
 @_try_remote_functions
-def zscore(col: "ColumnOrName") -> Column:
+def zscore(col: "ColumnOrName", *group_by: "ColumnOrName") -> Column:
     """
-    Window function: z-score normalization over the entire dataset.
+    Per-group or global z-score normalization.
 
-    The z-score is computed as:
+    z = (value - mean) / stddev
 
-        (value - avg(value)) / stddev_samp(value)
-
-    Nulls stay null. If the standard deviation is zero (all non-null values
-    identical), this function returns 0.0 for non-null values.
-
-    .. versionadded:: 4.1.0
-
-    Parameters
-    ----------
-    col : :class:`~pyspark.sql.Column` or str
-        target column to normalize
-
-    Returns
-    -------
-    :class:`~pyspark.sql.Column`
-        z-scored values
+    - If group_by is provided, normalization is done within each group.
+    - Nulls remain null.
+    - If stddev = 0, return 0.0 for all non-null values.
     """
     from pyspark.sql.window import Window
     from pyspark.sql.functions import col as _col, lit, when, avg as _avg, stddev_samp as _stddev
@@ -4264,8 +4251,14 @@ def zscore(col: "ColumnOrName") -> Column:
     # Normalize to a Column
     col_expr = col if isinstance(col, Column) else _col(col)
 
-    # Global window over entire dataset
-    w = Window.partitionBy()
+    if group_by:
+        group_exprs = [
+            g if isinstance(g, Column) else _col(g)
+            for g in group_by
+        ]
+        w = Window.partitionBy(*group_exprs)
+    else:
+        w = Window.partitionBy()   # global normalization
 
     mean_col = _avg(col_expr).over(w)
     stddev_col = _stddev(col_expr).over(w)
