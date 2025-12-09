@@ -523,9 +523,9 @@ object functions {
    *  - Null values are preserved as null.
    *
    * @param e column to scale
-   * @param outputMin minimum value of output range (default: 0.0)
-   * @param outputMax maximum value of output range (default: 1.0)
-   * @param groupBy columns to partition by for per-group scaling (optional)
+   * @param outputMin minimum value of output range
+   * @param outputMax maximum value of output range
+   * @param groupBy columns to partition by for per-group scaling
    * @return column with scaled values in range [outputMin, outputMax]
    *
    * @group agg_funcs
@@ -533,8 +533,8 @@ object functions {
    */
   def min_max_scale(
       e: Column,
-      outputMin: Double = 0.0,
-      outputMax: Double = 1.0,
+      outputMin: Double,
+      outputMax: Double,
       groupBy: Column*): Column = {
     // Build window: per-group if groupBy given, else global
     val w = if (groupBy.nonEmpty) {
@@ -556,6 +556,16 @@ object functions {
       .otherwise(
         ((e - minCol) / range) * lit(outputRange) + lit(outputMin)
       )
+  }
+
+  /**
+   * Per-group min-max scaling using a window with default output range [0.0, 1.0].
+   *
+   * @group agg_funcs
+   * @since 4.1.0
+   */
+  def min_max_scale(e: Column, groupBy: Column*): Column = {
+    min_max_scale(e, 0.0, 1.0, groupBy: _*)
   }
 
   /**
