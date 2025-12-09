@@ -28,7 +28,7 @@ import org.apache.spark.sql.api.java._
 import org.apache.spark.sql.catalyst.ScalaReflection
 import org.apache.spark.sql.catalyst.encoders.AgnosticEncoders.PrimitiveLongEncoder
 import org.apache.spark.sql.errors.CompilationErrors
-import org.apache.spark.sql.expressions.{Aggregator, SparkUserDefinedFunction, UserDefinedAggregator, UserDefinedFunction}
+import org.apache.spark.sql.expressions.{Aggregator, SparkUserDefinedFunction, UserDefinedAggregator, UserDefinedFunction, Window}
 import org.apache.spark.sql.internal.{SqlApiConf, ToScalaUDF}
 import org.apache.spark.sql.types._
 import org.apache.spark.util.SparkClassUtils
@@ -508,7 +508,89 @@ object functions {
   def covar_samp(columnName1: String, columnName2: String): Column = {
     covar_samp(Column(columnName1), Column(columnName2))
   }
+  /**
+   * Per-group min-max scaling using a window.
+   *
+   * For each group (defined by `groupBy`), scale `e` linearly into [outputMin, outputMax].
+   * When no grouping columns are provided, performs global scaling across the entire dataset.
+   *
+   * The scaled value is computed as:
+   * {{{(value - min) / (max - min) * (output_max - output_min) + output_min}}}
+   *
+   * Special cases:
+   *  - When all non-null values in a group are identical (max == min), returns the midpoint
+   *    of the output range to avoid division by zero.
+   *  - Null values are preserved as null.
+   *
+   * @param e column to scale
+   * @param outputMin minimum value of output range
+   * @param outputMax maximum value of output range
+   * @param groupBy columns to partition by for per-group scaling
+   * @return column with scaled values in range [outputMin, outputMax]
+   *
+   * @group agg_funcs
+   * @since 4.1.0
+   */
+  def min_max_scale(
+      e: Column,
+      outputMin: Double,
+      outputMax: Double,
+      groupBy: Column*): Column = {
+    // Build window: per-group if groupBy given, else global
+    val w = if (groupBy.nonEmpty) {
+      Window.partitionBy(groupBy: _*)
+    } else {
+      Window.partitionBy()
+    }
 
+    // Per-group min and max (computed in single pass by Catalyst)
+    val minCol = min(e).over(w)
+    val maxCol = max(e).over(w)
+    val range = maxCol - minCol
+
+    val outputRange = outputMax - outputMin
+    val midpoint = (outputMax + outputMin) / 2.0
+
+    when(e.isNull, lit(null))
+      .when(range === 0.0, lit(midpoint))
+      .otherwise(
+        ((e - minCol) / range) * lit(outputRange) + lit(outputMin)
+      )
+  }
+
+  /**
+   * Per-group min-max scaling using a window with default output range [0.0, 1.0].
+   *
+   * @group agg_funcs
+   * @since 4.1.0
+   */
+  def min_max_scale(e: Column, groupBy: Column*): Column = {
+    min_max_scale(e, 0.0, 1.0, groupBy: _*)
+  }
+
+  /**
+   * Per-group min-max scaling using a window.
+   *
+   * @group agg_funcs
+   * @since 4.1.0
+   */
+  def min_max_scale(
+      columnName: String,
+      outputMin: Double,
+      outputMax: Double,
+      groupBy: Column*): Column = {
+    min_max_scale(Column(columnName), outputMin, outputMax, groupBy: _*)
+  }
+
+  /**
+   * Per-group min-max scaling using a window with default output range [0.0, 1.0].
+   *
+   * @group agg_funcs
+   * @since 4.1.0
+   */
+  def min_max_scale(columnName: String, groupBy: Column*): Column = {
+    min_max_scale(Column(columnName), 0.0, 1.0, groupBy: _*)
+  }
   /**
    * Aggregate function: returns the first value in a group.
    *

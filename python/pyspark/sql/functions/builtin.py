@@ -4169,6 +4169,107 @@ def desc_nulls_last(col: "ColumnOrName") -> Column:
         else _invoke_function("desc_nulls_last", col)
     )
 
+from typing import Union
+ColumnOrName = Union[str, Column]
+
+@_try_remote_functions
+def min_max_scale(
+    col: ColumnOrName,
+    output_min: float = 0.0,
+    output_max: float = 1.0,
+    *group_by: ColumnOrName,
+) -> Column:
+    """
+    Per-group min-max scaling using a window.
+
+    For each group (defined by `group_by`), scale `col` linearly into
+    [output_min, output_max].
+
+    - If all non-null values in a group are identical, map them to the midpoint
+      of the output range.
+    - Nulls stay null.
+
+    Example
+    -------
+    >>> df = spark.createDataFrame(
+    ...     [("A", 10.0), ("A", 20.0), ("B", 5.0), ("B", 15.0)],
+    ...     ["group", "value"]
+    ... )
+    >>> df.select(
+    ...     "group",
+    ...     F.min_max_scale("value", 0, 100, "group").alias("scaled")
+    ... ).show()
+    """
+
+    from pyspark.sql.functions import col as _col, lit, when, min as _min, max as _max
+    from pyspark.sql.window import Window
+
+    # Normalize main column to a Column
+    col_expr = col if isinstance(col, Column) else _col(col)
+
+    # Build window: per-group if group_by given, else global
+    if group_by:
+        group_exprs = [
+            g if isinstance(g, Column) else _col(g) for g in group_by
+        ]
+        w = Window.partitionBy(*group_exprs)
+    else:
+        # Global scaling (one group for all rows)
+        w = Window.partitionBy()
+
+    # Per-group min and max
+    min_col = _min(col_expr).over(w)
+    max_col = _max(col_expr).over(w)
+
+    range_col = max_col - min_col
+    output_range = output_max - output_min
+    midpoint = (output_max + output_min) / 2.0
+
+    return (
+        when(col_expr.isNull(), lit(None))                # preserve nulls
+        .when(range_col == 0.0, lit(midpoint))            # all identical in group
+        .otherwise(
+            ((col_expr - min_col) / range_col) * lit(output_range)
+            + lit(output_min)
+        )
+    )
+
+@_try_remote_functions
+def zscore(col: "ColumnOrName", *group_by: "ColumnOrName") -> Column:
+    """
+    Per-group or global z-score normalization.
+
+    z = (value - mean) / stddev
+
+    - If group_by is provided, normalization is done within each group.
+    - Nulls remain null.
+    - If stddev = 0, return 0.0 for all non-null values.
+    """
+    from pyspark.sql.window import Window
+    from pyspark.sql.functions import col as _col, lit, when, avg as _avg, stddev_samp as _stddev
+
+    # Normalize to a Column
+    col_expr = col if isinstance(col, Column) else _col(col)
+
+    if group_by:
+        group_exprs = [
+            g if isinstance(g, Column) else _col(g)
+            for g in group_by
+        ]
+        w = Window.partitionBy(*group_exprs)
+    else:
+        w = Window.partitionBy()   # global normalization
+
+    mean_col = _avg(col_expr).over(w)
+    stddev_col = _stddev(col_expr).over(w)
+
+    return (
+        when(col_expr.isNull(), lit(None))
+        .when(stddev_col == 0.0, lit(0.0))   # all identical non-null values
+        .otherwise((col_expr - mean_col) / stddev_col)
+    )
+
+
 
 @_try_remote_functions
 def stddev(col: "ColumnOrName") -> Column:
