@@ -4169,110 +4169,70 @@ def desc_nulls_last(col: "ColumnOrName") -> Column:
         else _invoke_function("desc_nulls_last", col)
     )
 
+from typing import Union
+ColumnOrName = Union[str, Column]
+
 @_try_remote_functions
 def min_max_scale(
-    col: "ColumnOrName",
+    col: ColumnOrName,
     output_min: float = 0.0,
-    output_max: float = 1.0
+    output_max: float = 1.0,
+    *group_by: ColumnOrName,
 ) -> Column:
     """
-    Aggregate function: scales values to a specified range using min-max normalization.
+    Per-group min-max scaling using a window.
 
-    The scaled value is computed as:
-    (value - min) / (max - min) * (output_max - output_min) + output_min
+    For each group (defined by `group_by`), scale `col` linearly into
+    [output_min, output_max].
 
-    This function computes the minimum and maximum values across the entire dataset
-    in a single aggregation pass, then applies the scaling transformation.
+    - If all non-null values in a group are identical, map them to the midpoint
+      of the output range.
+    - Nulls stay null.
 
-    When the column contains all identical values (max == min), the function returns
-    the midpoint of the output range for all values to avoid division by zero.
-
-    .. versionadded:: 4.1.0
-
-    Parameters
-    ----------
-    col : :class:`~pyspark.sql.Column` or str
-        target column to scale
-    output_min : float, optional
-        minimum value of output range (default is 0.0)
-    output_max : float, optional
-        maximum value of output range (default is 1.0)
-
-    Returns
+    Example
     -------
-    :class:`~pyspark.sql.Column`
-        scaled values in range [output_min, output_max]
-
-    Examples
-    --------
-    >>> from pyspark.sql import functions as F
-    >>> df = spark.createDataFrame([(10.0,), (20.0,), (30.0,)], ["value"])
-
-    Scale to [0, 1] (default):
-
-    >>> df.select(F.min_max_scale("value")).show()
-    +---------------------+
-    |min_max_scale(value) |
-    +---------------------+
-    |                  0.0|
-    |                  0.5|
-    |                  1.0|
-    +---------------------+
-
-    Scale to custom range [0, 100]:
-
-    >>> df.select(F.min_max_scale("value", 0, 100)).show()
-    +---------------------------+
-    |min_max_scale(value,0,100) |
-    +---------------------------+
-    |                        0.0|
-    |                       50.0|
-    |                      100.0|
-    +---------------------------+
-
-    Handle edge case with identical values:
-
-    >>> df2 = spark.createDataFrame([(5.0,), (5.0,), (5.0,)], ["value"])
-    >>> df2.select(F.min_max_scale("value", 0, 100)).show()
-    +---------------------------+
-    |min_max_scale(value,0,100) |
-    +---------------------------+
-    |                       50.0|
-    |                       50.0|
-    |                       50.0|
-    +---------------------------+
+    >>> df = spark.createDataFrame(
+    ...     [("A", 10.0), ("A", 20.0), ("B", 5.0), ("B", 15.0)],
+    ...     ["group", "value"]
+    ... )
+    >>> df.select(
+    ...     "group",
+    ...     F.min_max_scale("value", 0, 100, "group").alias("scaled")
+    ... ).show()
     """
-    from pyspark.sql.classic.column import _to_java_column
+
+    from pyspark.sql.functions import col as _col, lit, when, min as _min, max as _max
     from pyspark.sql.window import Window
-    from pyspark.sql.functions import col as _col
 
-    col_expr: Column = col if isinstance(col, Column) else _col(col)
+    # Normalize main column to a Column
+    col_expr = col if isinstance(col, Column) else _col(col)
 
-    # Create window over entire dataset
-    w = Window.partitionBy()
+    # Build window: per-group if group_by given, else global
+    if group_by:
+        group_exprs = [
+            g if isinstance(g, Column) else _col(g) for g in group_by
+        ]
+        w = Window.partitionBy(*group_exprs)
+    else:
+        # Global scaling (one group for all rows)
+        w = Window.partitionBy()
 
-    # Compute min and max
-    min_col = min(col_expr).over(w)
-    max_col = max(col_expr).over(w)
+    # Per-group min and max
+    min_col = _min(col_expr).over(w)
+    max_col = _max(col_expr).over(w)
 
-    # Compute ranges
     range_col = max_col - min_col
     output_range = output_max - output_min
     midpoint = (output_max + output_min) / 2.0
 
-    # Apply scaling with edge case handling
-    expr = (
-        when(range_col == 0.0, lit(midpoint))
-        .when(col_expr.isNull(), lit(None))
+    return (
+        when(col_expr.isNull(), lit(None))                # preserve nulls
+        .when(range_col == 0.0, lit(midpoint))            # all identical in group
         .otherwise(
-            ((col_expr - min_col) / range_col) * lit(output_range) + lit(output_min)
+            ((col_expr - min_col) / range_col) * lit(output_range)
+            + lit(output_min)
         )
     )
-
-    # Give it a nice name
-    col_name = col_expr._jc.toString() if isinstance(col, Column) else col
-    return expr.alias(f"min_max_scale({col_name},{output_min},{output_max})")
-
 
 @_try_remote_functions
 def stddev(col: "ColumnOrName") -> Column:
