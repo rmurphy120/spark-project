@@ -4244,13 +4244,16 @@ def min_max_scale(
     """
     from pyspark.sql.classic.column import _to_java_column
     from pyspark.sql.window import Window
+    from pyspark.sql.functions import col as _col
+
+    col_expr: Column = col if isinstance(col, Column) else _col(col)
 
     # Create window over entire dataset
     w = Window.partitionBy()
 
     # Compute min and max
-    min_col = min(col).over(w)
-    max_col = max(col).over(w)
+    min_col = min(col_expr).over(w)
+    max_col = max(col_expr).over(w)
 
     # Compute ranges
     range_col = max_col - min_col
@@ -4258,13 +4261,18 @@ def min_max_scale(
     midpoint = (output_max + output_min) / 2.0
 
     # Apply scaling with edge case handling
-    return (
+    expr = (
         when(range_col == 0.0, lit(midpoint))
-        .when(_to_java_column(col).isNull(), lit(None))
+        .when(col_expr.isNull(), lit(None))
         .otherwise(
-            ((col - min_col) / range_col) * lit(output_range) + lit(output_min)
+            ((col_expr - min_col) / range_col) * lit(output_range) + lit(output_min)
         )
     )
+
+    # Give it a nice name
+    col_name = col_expr._jc.toString() if isinstance(col, Column) else col
+    return expr.alias(f"min_max_scale({col_name},{output_min},{output_max})")
+
 
 @_try_remote_functions
 def stddev(col: "ColumnOrName") -> Column:
